@@ -280,10 +280,21 @@ begin
     );
 end;
 
-select *
-from information_schema.tag_references_all_columns
-limit 100;
 
 use schema crm;
 select *
   from table(my_db.information_schema.tag_references_all_columns('CUSTOMER', 'table'));
+
+select *
+from data_quality.rule
+order by code
+limit 100;
+
+
+select 'select uuid,'|| COLUMN_NAME ||' from "' ||  OBJECT_DATABASE || '"."' || OBJECT_SCHEMA ||  '"."'  || OBJECT_NAME || '" where not("' ||           COLUMN_NAME || '" ' || rule.operator || ' ' || rule.expression || ')' DQ_SQL, COLUMN_NAME, rule.code as code
+    from table(information_schema.tag_references_all_columns('CUSTOMER', 'table'))
+    join data_quality.rule on rule.code = TAG_VALUE
+    where (tag_database, tag_schema, tag_name, level) = ('MY_DB','DATA_QUALITY','RULE','COLUMN')
+    and type = 'LOV'
+    and rule.active
+;
