@@ -191,7 +191,7 @@ begin
         call data_quality.custom_logger('clean_custom_lov', 'Number of records in cursor' , :record_count::string );
         call data_quality.custom_logger('clean_custom_lov', 'Dynamic sql' , :dynamic_query );
         select_statement := '
-        create or replace table tmp_rows_cleaned as
+        create or replace temporary table tmp_rows_cleaned as
         with 
           rows_identified as (
             '||rules.dq_sql ||'
@@ -207,7 +207,7 @@ begin
         res := (execute immediate :select_statement);
         update_statement := '
         update ' || :table_name ||' sc
-        set sc. '|| rules.column_name ||' = tmp.bv
+        set sc.'|| rules.column_name ||' = tmp.bv
         from tmp_rows_cleaned tmp
         where sc.uuid = tmp.uuid';
         call data_quality.custom_logger('clean_custom_lov', 'Executed update statement' , :update_statement );
@@ -291,7 +291,7 @@ from crm.customer
 where C_CUSTOMER_SK = 41697040;
 select *
 from crm.customer
-where c_salutation = 'Mis'
+where C_CUSTOMER_SK in (41697040,41697039);
 ;
 call data_quality.clean_table_lov('customer');
 
@@ -307,7 +307,7 @@ from tmp_rows_cleaned;
 
 select *
 from data_quality.process_logging
-order by id desc
+order by creation_time desc
 limit 20;
 
 -- test 3 - LOV -- BirthMonth
