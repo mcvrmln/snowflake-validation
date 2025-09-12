@@ -1,8 +1,10 @@
 use role sysadmin;
-create or replace database my_db;
+-- Some dangerous statements ;-)
+-- create or replace database my_db;
+-- create or replace schema data_quality;
+-- create or replace schema crm;
 use database my_db;
-create or replace schema data_quality;
-create or replace schema crm;
+
 
 -- Customer data looks like:
 create table crm.customer as 
@@ -22,6 +24,19 @@ set cust_c_gender =
         when 'Mrs' then 'F'
     end
 ;
+
+-- After debugging: uuid column is missing
+alter table crm.customer
+add column uuid string;
+
+update crm.customer
+set uuid = uuid_string();
+
+select *
+from crm.customer
+limit 100;
+
+
 
 -- Just a check if the case statement works
 select 
@@ -144,7 +159,7 @@ $$
 ;
 
 -- Procedure for LOV STRING
-create or replace procedure clean_table_lov(table_name string)
+create or replace procedure data_quality.clean_table_lov(table_name string)
 returns table (table_name string, column_name string, nb_rows_cleaned integer)
 language sql
 execute as caller
@@ -155,13 +170,14 @@ declare
     update_statement varchar;
     record_count NUMBER := 0;
     tag_references_x_rules resultset default ( 
-    select 'select uuid,'|| COLUMN_NAME ||' from "' ||  OBJECT_DATABASE || '"."' || OBJECT_SCHEMA ||  '"."'  || OBJECT_NAME || '" where not("' ||           COLUMN_NAME || '" ' || rule.operator || ' ' || rule.expression || ')' DQ_SQL, COLUMN_NAME, rule.code as code
-    from table(information_schema.tag_references_all_columns(:table_name::string, 'table'))
-    join data_quality.rule on rule.code = TAG_VALUE
-    where (tag_database, tag_schema, tag_name, level) = ('MY_DB','DATA_QUALITY','RULE','COLUMN')
-    and type = 'LOV'
-    and rule.active
-  );
+        select 'select uuid,'|| t.COLUMN_NAME ||' from "' ||  t.OBJECT_DATABASE || '"."' || t.OBJECT_SCHEMA ||  '"."'  || t.OBJECT_NAME || '" where not("' ||           t.COLUMN_NAME || '" ' || r.operator || ' ' || r.expression || ')' DQ_SQL, t.COLUMN_NAME, r.code as code
+        from table(information_schema.tag_references_all_columns(:table_name::string, 'table')) t
+        join data_quality.rule  r on r.code = t.tag_value
+        where 1=1
+        and (tag_database, tag_schema, tag_name, level) = ('MY_DB','DATA_QUALITY','RULE','COLUMN')
+        and r.attribute_type = 'LOV'
+        and r.active
+    );
     c1 cursor for tag_references_x_rules;
     res resultset;
 begin
@@ -170,32 +186,70 @@ begin
     create or replace table tmp_result (table_name string, column_name string,  nb_rows_cleaned integer);
     call data_quality.custom_logger('clean_table_lov', 'Table tmp_result created', NULL);
     for rules in c1 do
-        record_count := record_count + 1;
-        call data_quality.custom_logger('clean_custom_lov', 'Number of records in cursor' , record_count );
+        record_count := :record_count + 1;
+        let dynamic_query string := rules.dq_sql;
+        call data_quality.custom_logger('clean_custom_lov', 'Number of records in cursor' , :record_count::string );
+        call data_quality.custom_logger('clean_custom_lov', 'Dynamic sql' , :dynamic_query );
         select_statement := '
         create or replace table tmp_rows_cleaned as
         with 
           rows_identified as (
             '||rules.dq_sql ||'
           ),
-          rule as (select expression, threshold from data_quality.rule where code = \''|| rules.code ||'\')
+          rule_used as (select type, expression, threshold from data_quality.rule where code = \''|| rules.code ||'\')
         select 
           ri.*, 
-          find_best_value('|| rules.column_name ||',ru.attribute_type, ru.expression, ru.threshold) bv  
+          data_quality.find_best_value('|| rules.column_name ||',ru.type, ru.expression, ru.threshold) bv  
         from rows_identified ri
-        join rule ru on 1=1';
+        join rule_used ru on 1=1';
+
+        call data_quality.custom_logger('clean_custom_lov', 'Executed sql' , :select_statement );
         res := (execute immediate :select_statement);
         update_statement := '
         update ' || :table_name ||' sc
         set sc. '|| rules.column_name ||' = tmp.bv
         from tmp_rows_cleaned tmp
         where sc.uuid = tmp.uuid';
+        call data_quality.custom_logger('clean_custom_lov', 'Executed update statement' , :update_statement );
+        
         execute immediate update_statement;
         execute immediate 'insert into tmp_result select  \''|| :table_name ||'\',\''|| rules.column_name ||'\',count(*) from tmp_rows_cleaned';
     end for;
     res := (execute immediate 'select * from tmp_result');
     return table(res);
 end;
+
+/* START DEBUG PART */
+        create or replace table tmp_rows_cleaned as;
+        with 
+          rows_identified as (
+            select uuid_string() as uuid,C_SALUTATION from "MY_DB"."CRM"."CUSTOMER" where not("C_SALUTATION" IN ('Mr.','Dr.','Miss','Ms.','Sir','Mrs.'))
+          ),
+          rule_used as (select type, expression, threshold from data_quality.rule where code = 'R001')
+        select 
+          ru.*, 
+          data_quality.find_best_value(C_SALUTATION,ru.type, ru.expression, ru.threshold) bv  
+        from rows_identified ri
+        join rule_used ru on 1=1
+;
+
+select expression, threshold from data_quality.rule where code = 'R001';
+select uuid_string() as uuid,C_SALUTATION 
+from "MY_DB"."CRM"."CUSTOMER" 
+where not("C_SALUTATION" IN ('Mr.','Dr.','Miss','Ms.','Sir','Mrs.'))
+;
+select *
+from TMP_ROWS_CLEANED
+limit 100;
+
+truncate TMP_ROWS_CLEANED;
+
+/* END OF DEBUG PART */
+
+select *
+from table(information_schema.tag_references_all_columns('customer', 'table'))
+limit 100;
+
 -- Pattern Validation without cleaning
 create or replace procedure clean_check_pattern(table_name string)
 returns table (table_name string, column_name string, nb_rows_cleaned integer)
@@ -235,6 +289,10 @@ update crm.customer  set c_salutation = 'Mis' where C_CUSTOMER_SK = 41697040;
 select *
 from crm.customer
 where C_CUSTOMER_SK = 41697040;
+select *
+from crm.customer
+where c_salutation = 'Mis'
+;
 call data_quality.clean_table_lov('customer');
 
 -- test 2 - LOV - Gender
@@ -242,7 +300,10 @@ update crm.customer  set cust_c_gender = 'ff' where C_CUSTOMER_SK = 41697040;
 call data_quality.clean_table_lov('customer');
 SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()));
 select *
-from data_quality.tmp_result;
+from crm.tmp_result;
+
+select *
+from tmp_rows_cleaned;
 
 select *
 from data_quality.process_logging
@@ -269,13 +330,13 @@ create table process_logging (
     creation_time datetime
 );
 
-create or replace procedure custom_logger(process string, step string, value string)
+create or replace procedure data_quality.custom_logger(process string, step string, value string)
 returns varchar
 language sql
 execute as caller
 as
 begin
-    insert into process_logging (process, step, value, creation_time) values(
+    insert into data_quality.process_logging (process, step, value, creation_time) values(
         :process, :step, :value, current_timestamp()
     );
 end;
